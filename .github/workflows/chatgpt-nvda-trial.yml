@@ -1,4 +1,4 @@
-name: TradingAgents NVDA research trial
+name: TradingAgents NVDA no-key local-model trial
 
 on:
   push:
@@ -12,43 +12,77 @@ permissions:
 jobs:
   research:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 90
     env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
-      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-      TRADINGAGENTS_LLM_PROVIDER: openai
-      TRADINGAGENTS_DEEP_THINK_LLM: gpt-6-sol
-      TRADINGAGENTS_QUICK_THINK_LLM: gpt-6-luna
+      # Run the upstream framework with a local model, with no API credentials.
+      TRADINGAGENTS_LLM_PROVIDER: ollama
+      TRADINGAGENTS_DEEP_THINK_LLM: qwen2.5:3b
+      TRADINGAGENTS_QUICK_THINK_LLM: qwen2.5:3b
+      TRADINGAGENTS_OUTPUT_LANGUAGE: English
+      TRADINGAGENTS_MAX_DEBATE_ROUNDS: "1"
+      TRADINGAGENTS_MAX_RISK_ROUNDS: "1"
+      TRADINGAGENTS_MAX_TOOL_ROUNDS: "3"
       TRADINGAGENTS_NO_UPDATE_CHECK: "1"
       TRADINGAGENTS_RESULTS_DIR: ${{ github.workspace }}/research-results
-      TRADINGAGENTS_CACHE_DIR: ${{ runner.temp }}/ta-cache
+      TRADINGAGENTS_CACHE_DIR: ${{ github.workspace }}/research-cache
+      OLLAMA_BASE_URL: http://127.0.0.1:11434/v1
+      OLLAMA_NUM_CTX: "8192"
+      OLLAMA_NUM_PARALLEL: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out original repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install original TradingAgents
+
+      - name: Install unmodified TradingAgents
         run: |
           python -m pip install --upgrade pip
           python -m pip install .
-          python -c "import tradingagents, cli.main; print('TradingAgents installation verified')"
-      - name: Check model provider access
+          python -c "import tradingagents, cli.main; print('TradingAgents import OK')"
+
+      - name: Install local Ollama (no API key)
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve >/tmp/tradingagents-ollama.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags
+          ollama pull qwen2.5:3b
+
+      - name: Verify local model responds
+        run: |
+          python - <<'PY'
+          import requests
+          r = requests.post(
+              "http://127.0.0.1:11434/api/generate",
+              json={"model": "qwen2.5:3b", "prompt": "Reply with READY.", "stream": False},
+              timeout=180,
+          )
+          r.raise_for_status()
+          print("Local model: " + str(r.json().get("response", ""))[:200])
+          PY
+
+      - name: Run NVDA research with upstream agents
         shell: bash
         run: |
-          if [ -z "$OPENAI_API_KEY" ]; then
-            echo "::error::No OPENAI_API_KEY GitHub Actions secret. Set it in this repository's Settings > Secrets and variables > Actions before a real agent run."
-            exit 1
-          fi
-          echo "Model key found; value kept secret."
-      - name: Run unmodified multi-agent NVDA analysis
-        run: |
-          tradingagents --ticker NVDA --date 2026-11-06 --analysts market,sentiment,news,fundamentals --save --html --no-show
-      - name: Upload research report
+          set -o pipefail
+          tradingagents --ticker NVDA --date 2026-11-06 --analysts market,news --save --html --no-show 2>&1 | tee tradingagents-trial.log
+
+      - name: Upload actual report and logs (if generated)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nvda-research-results
-          path: research-results/
+          name: nvda-tradingagents-local-trial
+          path: |
+            research-results/
+            tradingagents-trial.log
+            /tmp/tradingagents-ollama.log
           if-no-files-found: ignore
           retention-days: 7
