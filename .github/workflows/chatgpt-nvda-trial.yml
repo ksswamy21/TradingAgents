@@ -1,0 +1,54 @@
+name: TradingAgents NVDA research trial
+
+on:
+  push:
+    branches: [chatgpt-nvda-trial]
+    paths: [.github/workflows/chatgpt-nvda-trial.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      TRADINGAGENTS_LLM_PROVIDER: openai
+      TRADINGAGENTS_DEEP_THINK_LLM: gpt-6-sol
+      TRADINGAGENTS_QUICK_THINK_LLM: gpt-6-luna
+      TRADINGAGENTS_NO_UPDATE_CHECK: "1"
+      TRADINGAGENTS_RESULTS_DIR: ${{ github.workspace }}/research-results
+      TRADINGAGENTS_CACHE_DIR: ${{ runner.temp }}/ta-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install original TradingAgents
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+          python -c "import tradingagents, cli.main; print('TradingAgents installation verified')"
+      - name: Check model provider access
+        shell: bash
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::No OPENAI_API_KEY GitHub Actions secret. Set it in this repository's Settings > Secrets and variables > Actions before a real agent run."
+            exit 1
+          fi
+          echo "Model key found; value kept secret."
+      - name: Run unmodified multi-agent NVDA analysis
+        run: |
+          tradingagents --ticker NVDA --date 2026-11-06 --analysts market,sentiment,news,fundamentals --save --html --no-show
+      - name: Upload research report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvda-research-results
+          path: research-results/
+          if-no-files-found: ignore
+          retention-days: 7
